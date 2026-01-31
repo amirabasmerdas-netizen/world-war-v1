@@ -1,15 +1,17 @@
 services:
   - type: web
-    name: war-game-bot
+    name: war-strategy-game
     env: python
-    buildCommand: pip install -r requirements.txt
+    buildCommand: |
+      pip install --upgrade pip
+      pip install -r requirements.txt
     startCommand: python main.py
     envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
       - key: MOTHER_BOT_TOKEN
         sync: false
       - key: WEBHOOK_URL
         sync: false
-      - key: PORT
-        value: 8443
     healthCheckPath: /health
     autoDeploy: true
