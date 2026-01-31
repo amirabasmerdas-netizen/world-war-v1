@@ -2,16 +2,14 @@
 # -*- coding: utf-8 -*-
 import os
 import logging
-import asyncio
 import json
 import sqlite3
 import random
-import time
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 from contextlib import contextmanager
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -20,7 +18,6 @@ from telegram.ext import (
     filters,
     ContextTypes,
     ConversationHandler,
-    PicklePersistence,
 )
 
 # تنظیمات لاگ
@@ -33,280 +30,152 @@ logger = logging.getLogger(__name__)
 # حالت‌های مکالمه
 WAITING_TOKEN, WAITING_OWNER_ID = range(2)
 
-# ==================== کلاس دیتابیس ====================
+# ==================== دیتابیس ====================
 
-class DatabaseManager:
-    _instance = None
-    
-    def __new__(cls):
-        if cls._instance is None:
-            cls._instance = super().__new__(cls)
-            cls._instance.init_database()
-        return cls._instance
-    
-    def init_database(self):
-        """ایجاد جداول دیتابیس"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            
-            # جدول ربات‌ها
-            cursor.execute('''
-            CREATE TABLE IF NOT EXISTS bots (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                token TEXT UNIQUE NOT NULL,
-                owner_id INTEGER NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                status TEXT DEFAULT 'active',
-                webhook_url TEXT
-            )
-            ''')
-            
-            # جدول کاربران
-            cursor.execute('''
-            CREATE TABLE IF NOT EXISTS users (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER NOT NULL,
-                bot_id INTEGER NOT NULL,
-                country TEXT NOT NULL,
-                username TEXT,
-                first_name TEXT,
-                last_name TEXT,
-                is_owner BOOLEAN DEFAULT FALSE,
-                resources TEXT DEFAULT '{"money": 10000, "oil": 500, "electricity": 1000, "population": 1000}',
-                units TEXT DEFAULT '{}',
-                technology_level INTEGER DEFAULT 1,
-                morale INTEGER DEFAULT 100,
-                last_login TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(user_id, bot_id)
-            )
-            ''')
-            
-            # جدول AI کشورها
-            cursor.execute('''
-            CREATE TABLE IF NOT EXISTS ai_countries (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                bot_id INTEGER NOT NULL,
-                name TEXT NOT NULL,
-                personality TEXT DEFAULT 'neutral',
-                strategy TEXT DEFAULT '{}',
-                resources TEXT DEFAULT '{"money": 15000, "oil": 800, "electricity": 1200, "population": 1500}',
-                units TEXT DEFAULT '{}',
-                technology_level INTEGER DEFAULT 1,
-                morale INTEGER DEFAULT 100,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-            ''')
-            
-            # جدول جنگ‌ها
-            cursor.execute('''
-            CREATE TABLE IF NOT EXISTS battles (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                bot_id INTEGER NOT NULL,
-                attacker_id INTEGER,
-                defender_id INTEGER,
-                attacker_type TEXT CHECK(attacker_type IN ('player', 'ai')),
-                defender_type TEXT CHECK(defender_type IN ('player', 'ai')),
-                attacker_country TEXT,
-                defender_country TEXT,
-                units_used TEXT,
-                result TEXT,
-                loot TEXT,
-                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-            ''')
-            
-            # جدول وام‌ها
-            cursor.execute('''
-            CREATE TABLE IF NOT EXISTS loans (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER NOT NULL,
-                bot_id INTEGER NOT NULL,
-                amount INTEGER NOT NULL,
-                remaining INTEGER NOT NULL,
-                last_payment_date TIMESTAMP,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-            ''')
-            
-            conn.commit()
-    
-    @contextmanager
-    def get_connection(self):
-        """مدیریت اتصال به دیتابیس"""
-        conn = sqlite3.connect('war_game.db', check_same_thread=False)
-        conn.row_factory = sqlite3.Row
-        try:
-            yield conn
-            conn.commit()
-        except Exception as e:
-            conn.rollback()
-            raise e
-        finally:
-            conn.close()
+@contextmanager
+def get_db_connection():
+    """مدیریت اتصال به دیتابیس"""
+    conn = sqlite3.connect('war_game.db', check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    try:
+        yield conn
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        raise e
+    finally:
+        conn.close()
 
-db = DatabaseManager()
+def init_database():
+    """ایجاد جداول دیتابیس"""
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        
+        # جدول ربات‌ها
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS bots (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            token TEXT UNIQUE NOT NULL,
+            owner_id INTEGER NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            status TEXT DEFAULT 'active'
+        )
+        ''')
+        
+        # جدول کاربران
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            bot_id INTEGER NOT NULL,
+            country TEXT NOT NULL DEFAULT 'ایران 🇮🇷',
+            username TEXT,
+            first_name TEXT,
+            last_name TEXT,
+            is_owner BOOLEAN DEFAULT FALSE,
+            resources TEXT DEFAULT '{"money": 10000, "oil": 500, "electricity": 1000, "population": 1000}',
+            units TEXT DEFAULT '{}',
+            technology_level INTEGER DEFAULT 1,
+            morale INTEGER DEFAULT 100,
+            last_login TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(user_id, bot_id)
+        )
+        ''')
+        
+        # جدول وام‌ها
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS loans (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            bot_id INTEGER NOT NULL,
+            amount INTEGER NOT NULL,
+            remaining INTEGER NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        ''')
+        
+        # جدول نیروها
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS units (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            bot_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            unit_type TEXT NOT NULL,
+            unit_name TEXT NOT NULL,
+            count INTEGER DEFAULT 0,
+            level INTEGER DEFAULT 1
+        )
+        ''')
 
-# ==================== مدیریت ربات‌ها ====================
+init_database()
 
-class BotManager:
-    _bots = {}
-    
-    @classmethod
-    def get_bot(cls, bot_id: int):
-        """دریافت ربات با شناسه"""
-        return cls._bots.get(bot_id)
-    
-    @classmethod
-    def add_bot(cls, bot_id: int, token: str):
-        """افزودن ربات جدید"""
-        if bot_id not in cls._bots:
-            cls._bots[bot_id] = ChildBot(token, bot_id)
-            logger.info(f"ربات فرزند {bot_id} اضافه شد")
-        return cls._bots[bot_id]
-    
-    @classmethod
-    def remove_bot(cls, bot_id: int):
-        """حذف ربات"""
-        if bot_id in cls._bots:
-            del cls._bots[bot_id]
-            logger.info(f"ربات فرزند {bot_id} حذف شد")
-    
-    @classmethod
-    async def start_all_bots(cls):
-        """راه‌اندازی تمام ربات‌ها"""
-        with db.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT id, token FROM bots WHERE status = 'active'")
-            bots = cursor.fetchall()
-            
-            for bot in bots:
-                try:
-                    cls.add_bot(bot['id'], bot['token'])
-                    logger.info(f"ربات {bot['id']} راه‌اندازی شد")
-                except Exception as e:
-                    logger.error(f"خطا در راه‌اندازی ربات {bot['id']}: {e}")
+# ==================== توابع کمکی ====================
+
+def get_default_units():
+    """واحدهای پیش‌فرض بازی"""
+    return {
+        "ground": [
+            {"name": "تازه نفس 👶", "count": 10, "cost": 50},
+            {"name": "ارپیجی زن 🚀", "count": 5, "cost": 200},
+            {"name": "تک تیرانداز ⛺", "count": 5, "cost": 150},
+            {"name": "سرباز حرفه ای 🪖", "count": 0, "cost": 300}
+        ],
+        "air": [
+            {"name": "موشک کوتاه‌برد", "count": 2, "cost": 500},
+            {"name": "جنگنده سبک", "count": 1, "cost": 1000}
+        ],
+        "defense": [
+            {"name": "پدافند معمولی 📡", "count": 3, "cost": 400},
+            {"name": "پدافند حرفه ای 📡", "count": 0, "cost": 800}
+        ]
+    }
+
+def get_default_resources():
+    """منابع پیش‌فرض"""
+    return {
+        "money": 10000,
+        "oil": 500,
+        "electricity": 1000,
+        "population": 1000
+    }
 
 # ==================== ربات مادر ====================
 
-async def mother_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """شروع ربات مادر"""
     user = update.effective_user
     await update.message.reply_text(
         f"👑 سلام {user.first_name}!\n"
         f"به ربات مادر بازی استراتژیک خوش آمدید.\n\n"
-        f"📋 دستورات اصلی:\n"
+        f"📋 دستورات:\n"
         f"/addbot - ایجاد ربات فرزند جدید\n"
-        f"/listbots - مشاهده ربات‌های شما\n"
+        f"/listbots - نمایش ربات‌های شما\n"
         f"/help - راهنمای کامل"
     )
 
-async def start_add_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """شروع فرآیند افزودن ربات"""
-    await update.message.reply_text(
-        "🤖 **مراحل ایجاد ربات فرزند:**\n\n"
-        "1. به @BotFather مراجعه کنید\n"
-        "2. روی /newbot کلیک کنید\n"
-        "3. یک نام برای ربات انتخاب کنید\n"
-        "4. یک یوزرنیم منحصربه‌فرد انتخاب کنید\n"
-        "5. توکن ربات را کپی کنید\n\n"
-        "✅ لطفاً توکن ربات را ارسال کنید:"
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """راهنمای ربات مادر"""
+    help_text = (
+        "📚 **راهنمای ربات مادر**\n\n"
+        "🛠 **دستورات:**\n"
+        "• /start - شروع ربات\n"
+        "• /addbot - ایجاد ربات فرزند\n"
+        "• /listbots - نمایش ربات‌ها\n"
+        "• /help - این راهنما\n\n"
+        "⚙️ **نحوه کار:**\n"
+        "1. با /addbot ربات فرزند بسازید\n"
+        "2. توکن را از @BotFather بگیرید\n"
+        "3. آیدی عددی خود را وارد کنید\n"
+        "4. بازی شروع می‌شود!"
     )
-    return WAITING_TOKEN
+    await update.message.reply_text(help_text, parse_mode='Markdown')
 
-async def process_bot_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """پردازش توکن ربات"""
-    token = update.message.text.strip()
-    
-    # بررسی فرمت توکن
-    if not token.startswith('') or ':' not in token:
-        await update.message.reply_text(
-            "❌ توکن نامعتبر است!\n"
-            "لطفاً یک توکن معتبر از @BotFather ارسال کنید:"
-        )
-        return WAITING_TOKEN
-    
-    context.user_data['bot_token'] = token
-    
-    await update.message.reply_text(
-        "✅ توکن دریافت شد!\n\n"
-        "🔢 حالا آیدی عددی خود را ارسال کنید:\n"
-        "(برای دریافت آیدی عددی به @userinfobot مراجعه کنید)"
-    )
-    return WAITING_OWNER_ID
-
-async def process_owner_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """پردازش آیدی مالک"""
-    try:
-        owner_id = int(update.message.text.strip())
-    except ValueError:
-        await update.message.reply_text(
-            "❌ آیدی باید یک عدد باشد!\n"
-            "لطفاً آیدی عددی خود را ارسال کنید:"
-        )
-        return WAITING_OWNER_ID
-    
-    token = context.user_data.get('bot_token')
-    user = update.effective_user
-    
-    if not token:
-        await update.message.reply_text("❌ توکن یافت نشد! لطفاً دوباره شروع کنید: /addbot")
-        return ConversationHandler.END
-    
-    # ذخیره در دیتابیس
-    with db.get_connection() as conn:
-        cursor = conn.cursor()
-        try:
-            cursor.execute(
-                "INSERT INTO bots (token, owner_id) VALUES (?, ?)",
-                (token, owner_id)
-            )
-            bot_id = cursor.lastrowid
-            
-            # افزودن به مدیریت ربات‌ها
-            BotManager.add_bot(bot_id, token)
-            
-            await update.message.reply_text(
-                f"🎉 **ربات فرزند با موفقیت ایجاد شد!**\n\n"
-                f"🔑 شناسه ربات: `{bot_id}`\n"
-                f"👤 مالک: آیدی {owner_id}\n\n"
-                f"✅ اکنون می‌توانید به ربات فرزند مراجعه کنید و شروع به بازی کنید!\n\n"
-                f"🤖 ربات: https://t.me/{update.message.text.split(':')[0]}",
-                parse_mode='Markdown'
-            )
-            
-            # پاک کردن داده‌های موقت
-            if 'bot_token' in context.user_data:
-                del context.user_data['bot_token']
-            
-            return ConversationHandler.END
-            
-        except sqlite3.IntegrityError:
-            await update.message.reply_text(
-                "❌ این توکن قبلاً ثبت شده است!\n"
-                "لطفاً توکن جدیدی ارسال کنید:"
-            )
-            return WAITING_TOKEN
-        except Exception as e:
-            logger.error(f"خطا در ثبت ربات: {e}")
-            await update.message.reply_text(
-                f"❌ خطا در ثبت ربات: {str(e)}"
-            )
-            return ConversationHandler.END
-
-async def cancel_add_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """لغو فرآیند افزودن ربات"""
-    if 'bot_token' in context.user_data:
-        del context.user_data['bot_token']
-    
-    await update.message.reply_text("❌ فرآیند ایجاد ربات لغو شد.")
-    return ConversationHandler.END
-
-async def list_bots(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def list_bots_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """لیست ربات‌های کاربر"""
     user_id = update.effective_user.id
     
-    with db.get_connection() as conn:
+    with get_db_connection() as conn:
         cursor = conn.cursor()
         cursor.execute(
             "SELECT id, created_at, status FROM bots WHERE owner_id = ?",
@@ -315,744 +184,504 @@ async def list_bots(update: Update, context: ContextTypes.DEFAULT_TYPE):
         bots = cursor.fetchall()
     
     if not bots:
-        await update.message.reply_text("🤖 شما هنوز هیچ ربات فرزندی ندارید.")
+        await update.message.reply_text("🤖 شما هیچ ربات فرزندی ندارید.")
         return
     
-    message = "📋 **ربات‌های فرزند شما:**\n\n"
+    message = "📋 **ربات‌های شما:**\n\n"
     for bot in bots:
-        message += (
-            f"🔹 **ربات #{bot['id']}**\n"
-            f"   📅 ایجاد: {bot['created_at'][:10]}\n"
-            f"   🟢 وضعیت: {bot['status']}\n\n"
-        )
+        message += f"🔹 ربات #{bot['id']}\n📅 {bot['created_at'][:10]}\n🟢 {bot['status']}\n\n"
     
     await update.message.reply_text(message, parse_mode='Markdown')
 
-async def mother_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """راهنمای ربات مادر"""
-    help_text = (
-        "📚 **راهنمای ربات مادر**\n\n"
-        "🎯 **هدف:**\n"
-        "مدیریت ربات‌های فرزند برای بازی استراتژیک\n\n"
-        "🛠 **دستورات:**\n"
-        "• /start - شروع ربات\n"
-        "• /addbot - ایجاد ربات فرزند جدید\n"
-        "• /listbots - نمایش ربات‌های شما\n"
-        "• /help - این راهنما\n\n"
-        "⚙️ **نحوه کار:**\n"
-        "1. با /addbot یک ربات فرزند ایجاد کنید\n"
-        "2. توکن ربات را از @BotFather دریافت کنید\n"
-        "3. آیدی عددی خود را وارد کنید\n"
-        "4. ربات فرزند آماده بازی است!\n\n"
-        "❓ **پرسش‌های متداول:**\n"
-        "Q: آیدی عددی چیست؟\n"
-        "A: عددی منحصربه‌فرد شما در تلگرام\n\n"
-        "Q: هر کاربر چند ربات می‌تواند داشته باشد؟\n"
-        "A: محدودیتی وجود ندارد"
+async def add_bot_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """شروع فرآیند افزودن ربات"""
+    await update.message.reply_text(
+        "🤖 **ایجاد ربات فرزند:**\n\n"
+        "1. به @BotFather بروید\n"
+        "2. /newbot را بزنید\n"
+        "3. نام و یوزرنیم انتخاب کنید\n"
+        "4. توکن را کپی کنید\n\n"
+        "✅ لطفاً توکن را ارسال کنید:"
     )
-    await update.message.reply_text(help_text, parse_mode='Markdown')
+    return WAITING_TOKEN
 
-# ==================== کلاس ربات فرزند ====================
+async def process_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """پردازش توکن"""
+    token = update.message.text.strip()
+    
+    if not token.startswith('') or ':' not in token:
+        await update.message.reply_text("❌ توکن نامعتبر! دوباره ارسال کنید:")
+        return WAITING_TOKEN
+    
+    context.user_data['bot_token'] = token
+    
+    await update.message.reply_text(
+        "✅ توکن دریافت شد!\n\n"
+        "🔢 آیدی عددی خود را ارسال کنید:\n"
+        "(از @userinfobot دریافت کنید)"
+    )
+    return WAITING_OWNER_ID
 
-class ChildBot:
-    def __init__(self, token: str, bot_id: int):
-        self.token = token
-        self.bot_id = bot_id
-        self.application = None
-        self.setup_application()
-        
-    def setup_application(self):
-        """تنظیم اپلیکیشن ربات فرزند"""
-        self.application = Application.builder().token(self.token).build()
-        self.setup_handlers()
+async def process_owner_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """پردازش آیدی مالک"""
+    try:
+        owner_id = int(update.message.text.strip())
+    except ValueError:
+        await update.message.reply_text("❌ آیدی باید عدد باشد! دوباره ارسال کنید:")
+        return WAITING_OWNER_ID
     
-    def setup_handlers(self):
-        """تنظیم هندلرهای ربات فرزند"""
-        # هندلرهای اصلی
-        self.application.add_handler(CommandHandler("start", self.child_start))
-        self.application.add_handler(CommandHandler("help", self.child_help))
-        self.application.add_handler(CommandHandler("menu", self.show_main_menu))
-        
-        # هندلر برای کلیک روی دکمه‌ها
-        self.application.add_handler(CallbackQueryHandler(self.handle_child_callback))
-        
-        # هندلر برای پیام‌های متنی
-        self.application.add_handler(
-            MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_text_message)
-        )
+    token = context.user_data.get('bot_token')
+    user = update.effective_user
     
-    def get_default_units(self):
-        """واحدهای پیش‌فرض بازی"""
-        return {
-            "ground": {
-                "تازه نفس 👶": 10,
-                "ارپیجی زن 🚀": 60,
-                "تک تیرانداز ⛺": 65,
-                "سرباز حرفه ای 🪖": 1185,
-                "توپخانه حرفه ای ⚽": 53,
-                "سرباز 🙍‍♂️": 100,
-                "توپخانه ⚽": 2
-            },
-            "air": {
-                "موشک کوتاه‌برد": 5,
-                "جنگنده سبک": 2
-            },
-            "defense": {
-                "پدافند معمولی 📡": 5,
-                "پدافند حرفه ای 📡": 10
-            },
-            "navy": {
-                "ناو جنگی ⛴️": 2,
-                "کشتی جنگی ⛵️": 5
-            }
-        }
+    if not token:
+        await update.message.reply_text("❌ خطا! /addbot را دوباره بزنید.")
+        return ConversationHandler.END
     
-    async def child_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """شروع ربات فرزند"""
-        user = update.effective_user
-        user_id = user.id
-        
-        with db.get_connection() as conn:
-            cursor = conn.cursor()
-            
-            # بررسی وجود کاربر
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        try:
             cursor.execute(
-                """SELECT u.*, b.owner_id 
-                FROM users u 
-                JOIN bots b ON u.bot_id = b.id 
-                WHERE u.user_id = ? AND u.bot_id = ?""",
-                (user_id, self.bot_id)
+                "INSERT INTO bots (token, owner_id) VALUES (?, ?)",
+                (token, owner_id)
             )
-            user_data = cursor.fetchone()
+            bot_id = cursor.lastrowid
             
-            if user_data:
-                # کاربر موجود
-                is_owner = user_data['user_id'] == user_data['owner_id']
-                await self.show_welcome_back(update, user_data, is_owner)
-            else:
-                # کاربر جدید - بررسی آیا مالک است
-                cursor.execute(
-                    "SELECT owner_id FROM bots WHERE id = ?",
-                    (self.bot_id,)
-                )
-                bot_data = cursor.fetchone()
-                
-                if bot_data and user_id == bot_data['owner_id']:
-                    # مالک ربات
-                    await self.show_owner_panel(update, user)
-                else:
-                    # کاربر عادی - انتخاب کشور
-                    await self.show_country_selection(update, user_id)
-    
-    async def show_welcome_back(self, update: Update, user_data, is_owner: bool):
-        """خوش آمدگویی به کاربر بازگشته"""
-        country = user_data['country']
-        resources = json.loads(user_data['resources'])
-        
-        if is_owner:
-            message = f"👑 **خوش آمدید، فرمانده!**\n\n🏛 کشور: {country}\n💰 موجودی: {resources['money']:,}"
-        else:
-            message = f"🎖 **خوش آمدید!**\n\n🏛 کشور: {country}\n💰 موجودی: {resources['money']:,}"
-        
-        await update.message.reply_text(
-            message,
-            reply_markup=self.get_main_menu_keyboard(is_owner),
-            parse_mode='Markdown'
-        )
-    
-    async def show_owner_panel(self, update: Update, user):
-        """نمایش پنل مالک"""
-        keyboard = [
-            [
-                InlineKeyboardButton("🎮 شروع بازی", callback_data="start_game")
-            ]
-        ]
-        
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await update.message.reply_text(
-            "👑 **پنل مدیریت ربات**\n\n"
-            "شما مالک این ربات هستید.\n"
-            "برای شروع بازی روی دکمه زیر کلیک کنید.",
-            reply_markup=reply_markup
-        )
-    
-    async def show_country_selection(self, update: Update, user_id: int):
-        """نمایش لیست کشورها برای انتخاب"""
-        keyboard = [
-            [
-                InlineKeyboardButton("ایران 🇮🇷", callback_data="country_iran"),
-                InlineKeyboardButton("عراق 🇮🇶", callback_data="country_iraq")
-            ],
-            [
-                InlineKeyboardButton("ترکیه 🇹🇷", callback_data="country_turkey"),
-                InlineKeyboardButton("عربستان 🇸🇦", callback_data="country_saudi")
-            ]
-        ]
-        
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await update.message.reply_text(
-            "🏛 **انتخاب کشور**\n\n"
-            "لطفاً کشور خود را انتخاب کنید:",
-            reply_markup=reply_markup
-        )
-    
-    def get_main_menu_keyboard(self, is_owner: bool = False):
-        """ایجاد کیبورد منوی اصلی"""
-        keyboard = []
-        
-        # ردیف‌های مشترک
-        keyboard.extend([
-            [
-                InlineKeyboardButton("🪖 زمینی", callback_data="menu_ground"),
-                InlineKeyboardButton("✈️ هوایی", callback_data="menu_air")
-            ],
-            [
-                InlineKeyboardButton("📡 پدافند", callback_data="menu_defense"),
-                InlineKeyboardButton("🚢 دریایی", callback_data="menu_navy")
-            ],
-            [
-                InlineKeyboardButton("🏭 اقتصاد", callback_data="menu_economy"),
-                InlineKeyboardButton("🏢 سازه‌ها", callback_data="menu_structures")
-            ],
-            [
-                InlineKeyboardButton("⚔️ حمله", callback_data="menu_attack"),
-                InlineKeyboardButton("👤 اطلاعات", callback_data="menu_profile")
-            ],
-            [
-                InlineKeyboardButton("📘 راهنما", callback_data="menu_guide"),
-                InlineKeyboardButton("💵 وام", callback_data="menu_loan")
-            ]
-        ])
-        
-        return InlineKeyboardMarkup(keyboard)
-    
-    async def show_main_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """نمایش منوی اصلی"""
-        user_id = update.effective_user.id
-        
-        with db.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                """SELECT u.*, b.owner_id 
-                FROM users u 
-                JOIN bots b ON u.bot_id = b.id 
-                WHERE u.user_id = ? AND u.bot_id = ?""",
-                (user_id, self.bot_id)
-            )
-            user_data = cursor.fetchone()
-        
-        if user_data:
-            is_owner = user_data['user_id'] == user_data['owner_id']
-            country = user_data['country']
+            # ایجاد ربات فرزند
+            child_bot_token = token
+            # در اینجا باید ربات فرزند را راه‌اندازی کنیم
+            # اما فعلاً فقط دیتابیس را پر می‌کنیم
             
             await update.message.reply_text(
-                f"🏰 **کشور {country}**\n\n"
-                "منوی اصلی بازی:",
-                reply_markup=self.get_main_menu_keyboard(is_owner),
+                f"🎉 **ربات ایجاد شد!**\n\n"
+                f"🔑 شناسه: `{bot_id}`\n"
+                f"👤 مالک: {owner_id}\n\n"
+                f"✅ اکنون می‌توانید بازی کنید!",
                 parse_mode='Markdown'
             )
-        else:
-            await update.message.reply_text(
-                "لطفاً ابتدا با دستور /start شروع کنید."
-            )
+            
+            if 'bot_token' in context.user_data:
+                del context.user_data['bot_token']
+            
+            return ConversationHandler.END
+            
+        except sqlite3.IntegrityError:
+            await update.message.reply_text("❌ توکن تکراری! توکن جدیدی ارسال کنید:")
+            return WAITING_TOKEN
+        except Exception as e:
+            logger.error(f"خطا: {e}")
+            await update.message.reply_text(f"❌ خطا: {str(e)}")
+            return ConversationHandler.END
+
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """لغو فرآیند"""
+    if 'bot_token' in context.user_data:
+        del context.user_data['bot_token']
     
-    async def handle_child_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """مدیریت کلیک روی دکمه‌های ربات فرزند"""
-        query = update.callback_query
-        await query.answer()
-        
-        data = query.data
-        user_id = query.from_user.id
-        
-        if data == "start_game":
-            await self.start_new_game(query)
-        
-        elif data.startswith("country_"):
-            country_code = data.split("_")[1]
-            await self.assign_country(query, user_id, country_code)
-        
-        elif data.startswith("menu_"):
-            menu_type = data.split("_")[1]
-            await self.show_menu(query, menu_type, user_id)
-        
-        elif data == "back_main":
-            await self.show_main_menu_callback(query, user_id)
+    await update.message.reply_text("❌ عملیات لغو شد.")
+    return ConversationHandler.END
+
+# ==================== ربات فرزند ====================
+
+def create_child_app(token: str, bot_id: int):
+    """ایجاد اپلیکیشن ربات فرزند"""
+    app = Application.builder().token(token).build()
     
-    async def start_new_game(self, query):
-        """شروع بازی جدید"""
-        user_id = query.from_user.id
-        
-        with db.get_connection() as conn:
-            cursor = conn.cursor()
-            
-            # حذف کاربر قبلی اگر وجود دارد
-            cursor.execute(
-                "DELETE FROM users WHERE user_id = ? AND bot_id = ?",
-                (user_id, self.bot_id)
-            )
-            
-            # ایجاد کاربر جدید به عنوان مالک
-            default_resources = {
-                'money': 10000,
-                'oil': 500,
-                'electricity': 1000,
-                'population': 1000
-            }
-            
-            cursor.execute(
-                """INSERT INTO users 
-                (user_id, bot_id, country, username, first_name, last_name, is_owner, resources, units)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    user_id,
-                    self.bot_id,
-                    "ایران 🇮🇷",
-                    query.from_user.username,
-                    query.from_user.first_name,
-                    query.from_user.last_name,
-                    True,
-                    json.dumps(default_resources),
-                    json.dumps(self.get_default_units())
-                )
-            )
-            
-            # ایجاد کشورهای AI
-            await self.create_default_ai_countries(conn)
-        
-        keyboard = [[InlineKeyboardButton("🏰 منوی اصلی", callback_data="back_main")]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await query.edit_message_text(
-            "🎮 **بازی جدید شروع شد!**\n\n"
-            "کشور شما با منابع اولیه ایجاد شد.\n"
-            "کشورهای AI نیز آماده هستند.\n\n"
-            "از منوی اصلی برای شروع استفاده کنید.",
-            reply_markup=reply_markup,
-            parse_mode='Markdown'
-        )
+    # ثبت هندلرها
+    app.add_handler(CommandHandler("start", child_start))
+    app.add_handler(CommandHandler("menu", show_menu))
+    app.add_handler(CommandHandler("help", child_help))
+    app.add_handler(CallbackQueryHandler(handle_callback))
     
-    async def create_default_ai_countries(self, conn):
-        """ایجاد کشورهای AI پیش‌فرض"""
+    return app
+
+async def child_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """شروع ربات فرزند"""
+    user = update.effective_user
+    user_id = user.id
+    
+    # استخراج bot_id از context
+    bot_id = getattr(context, 'bot_id', 1)  # مقدار پیش‌فرض
+    
+    with get_db_connection() as conn:
         cursor = conn.cursor()
         
-        ai_countries = [
-            ("آمریکا 🤖", "aggressive", {"money": 15000, "oil": 800, "electricity": 1200, "population": 1500}),
-            ("روسیه 🤖", "unpredictable", {"money": 14000, "oil": 900, "electricity": 1100, "population": 1400}),
-        ]
+        # بررسی کاربر موجود
+        cursor.execute(
+            "SELECT * FROM users WHERE user_id = ? AND bot_id = ?",
+            (user_id, bot_id)
+        )
+        user_data = cursor.fetchone()
         
-        for name, personality, resources in ai_countries:
-            cursor.execute(
-                """INSERT INTO ai_countries 
-                (bot_id, name, personality, resources) 
-                VALUES (?, ?, ?, ?)""",
-                (self.bot_id, name, personality, json.dumps(resources))
-            )
-    
-    async def assign_country(self, query, user_id: int, country_code: str):
-        """اختصاص کشور به کاربر"""
-        country_map = {
-            "iran": "ایران 🇮🇷",
-            "iraq": "عراق 🇮🇶",
-            "turkey": "ترکیه 🇹🇷",
-            "saudi": "عربستان 🇸🇦"
-        }
-        
-        country_name = country_map.get(country_code, "ایران 🇮🇷")
-        
-        with db.get_connection() as conn:
-            cursor = conn.cursor()
-            
-            # ذخیره کاربر جدید
-            default_resources = {
-                'money': 10000,
-                'oil': 500,
-                'electricity': 1000,
-                'population': 1000
-            }
+        if user_data:
+            # کاربر موجود
+            await show_welcome_back(update, user_data)
+        else:
+            # کاربر جدید - ایجاد پروفایل
+            default_resources = json.dumps(get_default_resources())
+            default_units = json.dumps(get_default_units())
             
             cursor.execute(
                 """INSERT INTO users 
-                (user_id, bot_id, country, username, first_name, last_name, is_owner, resources, units)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    user_id,
-                    self.bot_id,
-                    country_name,
-                    query.from_user.username,
-                    query.from_user.first_name,
-                    query.from_user.last_name,
-                    False,
-                    json.dumps(default_resources),
-                    json.dumps(self.get_default_units())
-                )
+                (user_id, bot_id, username, first_name, last_name, resources, units)
+                VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (user_id, bot_id, user.username, user.first_name, 
+                 user.last_name or "", default_resources, default_units)
             )
-        
-        await query.edit_message_text(
-            f"✅ **کشور {country_name} انتخاب شد!**\n\n"
-            f"به بازی استراتژیک خوش آمدید!\n",
-            reply_markup=self.get_main_menu_keyboard(False),
-            parse_mode='Markdown'
+            
+            await show_welcome_new(update)
+
+async def show_welcome_back(update: Update, user_data):
+    """خوش آمدگویی به کاربر قدیمی"""
+    resources = json.loads(user_data['resources'])
+    
+    keyboard = [
+        [
+            InlineKeyboardButton("🪖 نیروها", callback_data="menu_units"),
+            InlineKeyboardButton("💰 منابع", callback_data="menu_resources")
+        ],
+        [
+            InlineKeyboardButton("⚔️ حمله", callback_data="menu_attack"),
+            InlineKeyboardButton("👤 پروفایل", callback_data="menu_profile")
+        ],
+        [
+            InlineKeyboardButton("💵 وام", callback_data="menu_loan"),
+            InlineKeyboardButton("📘 راهنما", callback_data="menu_help")
+        ]
+    ]
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await update.message.reply_text(
+        f"🎖 **خوش آمدید!**\n\n"
+        f"💰 موجودی: {resources['money']:,}\n"
+        f"🛢 نفت: {resources['oil']:,}\n"
+        f"⚡ برق: {resources['electricity']:,}",
+        reply_markup=reply_markup,
+        parse_mode='Markdown'
+    )
+
+async def show_welcome_new(update: Update):
+    """خوش آمدگویی به کاربر جدید"""
+    keyboard = [
+        [
+            InlineKeyboardButton("🎮 شروع بازی", callback_data="start_game")
+        ]
+    ]
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await update.message.reply_text(
+        "🎉 **به بازی استراتژیک خوش آمدید!**\n\n"
+        "شما رهبر یک کشور جدید هستید.\n"
+        "برای شروع روی دکمه زیر کلیک کنید.",
+        reply_markup=reply_markup
+    )
+
+async def show_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """نمایش منوی اصلی"""
+    keyboard = [
+        [
+            InlineKeyboardButton("🪖 نیروها", callback_data="menu_units"),
+            InlineKeyboardButton("💰 منابع", callback_data="menu_resources")
+        ],
+        [
+            InlineKeyboardButton("⚔️ حمله", callback_data="menu_attack"),
+            InlineKeyboardButton("👤 پروفایل", callback_data="menu_profile")
+        ],
+        [
+            InlineKeyboardButton("💵 وام", callback_data="menu_loan"),
+            InlineKeyboardButton("📘 راهنما", callback_data="menu_help")
+        ]
+    ]
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await update.message.reply_text(
+        "🏰 **منوی اصلی بازی**\n\n"
+        "لطفاً گزینه مورد نظر را انتخاب کنید:",
+        reply_markup=reply_markup
+    )
+
+async def child_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """راهنمای ربات فرزند"""
+    help_text = (
+        "🎮 **راهنمای بازی**\n\n"
+        "🪖 **نیروها:** انواع سرباز، هواپیما، پدافند\n"
+        "💰 **منابع:** پول، نفت، برق، جمعیت\n"
+        "⚔️ **حمله:** به کشورهای دیگر حمله کنید\n"
+        "💵 **وام:** روزی یک بار دریافت کنید\n\n"
+        "📱 **دستورات:**\n"
+        "/start - شروع بازی\n"
+        "/menu - منوی اصلی\n"
+        "/help - این راهنما"
+    )
+    
+    await update.message.reply_text(help_text, parse_mode='Markdown')
+
+async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """مدیریت کلیک روی دکمه‌ها"""
+    query = update.callback_query
+    await query.answer()
+    
+    data = query.data
+    
+    if data == "start_game":
+        await start_game(query)
+    elif data == "menu_units":
+        await show_units_menu(query)
+    elif data == "menu_resources":
+        await show_resources_menu(query)
+    elif data == "menu_profile":
+        await show_profile_menu(query)
+    elif data == "menu_loan":
+        await show_loan_menu(query)
+    elif data == "menu_help":
+        await show_help_menu(query)
+
+async def start_game(query):
+    """شروع بازی"""
+    keyboard = [
+        [InlineKeyboardButton("🏰 منوی اصلی", callback_data="menu_main")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await query.edit_message_text(
+        "🎮 **بازی شروع شد!**\n\n"
+        "منابع اولیه به شما تعلق گرفت.\n"
+        "از منوی اصلی برای پیشرفت استفاده کنید.",
+        reply_markup=reply_markup
+    )
+
+async def show_units_menu(query):
+    """نمایش منوی نیروها"""
+    user_id = query.from_user.id
+    
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT units FROM users WHERE user_id = ?",
+            (user_id,)
         )
+        user_data = cursor.fetchone()
     
-    async def show_menu(self, query, menu_type: str, user_id: int):
-        """نمایش منوهای مختلف"""
-        
-        if menu_type == "profile":
-            await self.show_profile_menu(query, user_id)
-        
-        elif menu_type == "ground":
-            await self.show_ground_forces(query, user_id)
-        
-        elif menu_type == "economy":
-            await self.show_economy_menu(query, user_id)
-        
-        elif menu_type == "guide":
-            await self.show_guide_menu(query)
-        
-        elif menu_type == "loan":
-            await self.show_loan_menu(query, user_id)
-    
-    async def show_profile_menu(self, query, user_id: int):
-        """نمایش پروفایل کاربر"""
-        with db.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT country, resources, units FROM users WHERE user_id = ? AND bot_id = ?",
-                (user_id, self.bot_id)
-            )
-            user_data = cursor.fetchone()
-        
-        if not user_data:
-            await query.edit_message_text("❌ کاربر یافت نشد!")
-            return
-        
-        country = user_data['country']
-        resources = json.loads(user_data['resources'])
+    if user_data:
         units = json.loads(user_data['units'])
         
-        total_troops = 0
-        for category in units.values():
-            if isinstance(category, dict):
-                total_troops += sum(category.values())
+        message = "🪖 **نیروهای شما:**\n\n"
         
-        message = (
-            f"👤 **پروفایل کشور {country}**\n\n"
-            f"💰 **منابع:**\n"
-            f"  • پول: {resources.get('money', 0):,}\n"
-            f"  • نفت: {resources.get('oil', 0):,}\n"
-            f"  • برق: {resources.get('electricity', 0):,}\n"
-            f"  • جمعیت: {resources.get('population', 0):,}\n\n"
-            f"🎖 **نیروها:**\n"
-            f"  • کل نیروها: {total_troops:,}\n"
-        )
-        
-        keyboard = [
-            [InlineKeyboardButton("🔄 به‌روزرسانی", callback_data="menu_profile")],
-            [InlineKeyboardButton("⬅️ بازگشت", callback_data="back_main")]
-        ]
-        
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await query.edit_message_text(
-            message,
-            reply_markup=reply_markup,
-            parse_mode='Markdown'
-        )
+        for category, unit_list in units.items():
+            message += f"**{category.upper()}:**\n"
+            for unit in unit_list:
+                message += f"• {unit['name']}: {unit['count']} عدد\n"
+            message += "\n"
     
-    async def show_ground_forces(self, query, user_id: int):
-        """نمایش نیروهای زمینی"""
-        with db.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT units FROM users WHERE user_id = ? AND bot_id = ?",
-                (user_id, self.bot_id)
-            )
-            user_data = cursor.fetchone()
-        
-        if not user_data:
-            await query.edit_message_text("❌ کاربر یافت نشد!")
-            return
-        
-        units = json.loads(user_data['units'])
-        ground_units = units.get('ground', {})
-        
-        message = "🪖 **نیروی زمینی**\n\n"
-        for unit_name, count in ground_units.items():
-            message += f"• {unit_name}: {count:,} نفر\n"
-        
-        message += f"\n💰 **هزینه ارتقاء:**\n"
-        message += "• تازه نفس → سرباز: 100 پول\n"
-        
-        keyboard = [
-            [InlineKeyboardButton("⬆️ ارتقاء نیروها", callback_data="upgrade_ground")],
-            [InlineKeyboardButton("⬅️ بازگشت", callback_data="back_main")]
-        ]
-        
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await query.edit_message_text(
-            message,
-            reply_markup=reply_markup,
-            parse_mode='Markdown'
-        )
+    else:
+        message = "❌ اطلاعات یافت نشد!"
     
-    async def show_economy_menu(self, query, user_id: int):
-        """نمایش منوی اقتصادی"""
-        with db.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT resources FROM users WHERE user_id = ? AND bot_id = ?",
-                (user_id, self.bot_id)
-            )
-            user_data = cursor.fetchone()
-        
-        if not user_data:
-            await query.edit_message_text("❌ کاربر یافت نشد!")
-            return
-        
+    keyboard = [
+        [InlineKeyboardButton("⬆️ افزایش نیرو", callback_data="upgrade_units")],
+        [InlineKeyboardButton("⬅️ بازگشت", callback_data="back_main")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await query.edit_message_text(
+        message,
+        reply_markup=reply_markup,
+        parse_mode='Markdown'
+    )
+
+async def show_resources_menu(query):
+    """نمایش منوی منابع"""
+    user_id = query.from_user.id
+    
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT resources FROM users WHERE user_id = ?",
+            (user_id,)
+        )
+        user_data = cursor.fetchone()
+    
+    if user_data:
         resources = json.loads(user_data['resources'])
         
         message = (
-            f"🏭 **بخش اقتصادی**\n\n"
-            f"💰 **موجودی:**\n"
+            "💰 **منابع شما:**\n\n"
             f"• پول: {resources.get('money', 0):,}\n"
             f"• نفت: {resources.get('oil', 0):,}\n"
-            f"• برق: {resources.get('electricity', 0):,}\n\n"
-            f"📈 **درآمد ماهانه:**\n"
-            f"• از کارخانه‌ها: 2,000 پول\n"
+            f"• برق: {resources.get('electricity', 0):,}\n"
+            f"• جمعیت: {resources.get('population', 0):,}\n\n"
+            f"📈 **درآمد:**\n"
+            f"• کارخانه: +1000 پول/روز\n"
+            f"• معدن: +500 نفت/روز"
+        )
+    else:
+        message = "❌ اطلاعات یافت نشد!"
+    
+    keyboard = [
+        [InlineKeyboardButton("🏭 ساخت سازه", callback_data="build_structure")],
+        [InlineKeyboardButton("⬅️ بازگشت", callback_data="back_main")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await query.edit_message_text(
+        message,
+        reply_markup=reply_markup,
+        parse_mode='Markdown'
+    )
+
+async def show_profile_menu(query):
+    """نمایش پروفایل"""
+    user_id = query.from_user.id
+    
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT country, resources, technology_level, morale FROM users WHERE user_id = ?",
+            (user_id,)
+        )
+        user_data = cursor.fetchone()
+    
+    if user_data:
+        resources = json.loads(user_data['resources'])
+        
+        message = (
+            f"👤 **پروفایل کشور {user_data['country']}**\n\n"
+            f"💰 پول: {resources.get('money', 0):,}\n"
+            f"🧠 تکنولوژی: سطح {user_data['technology_level']}\n"
+            f"😊 روحیه: {user_data['morale']}%\n\n"
+            f"🏆 **آمار:**\n"
+            f"• نیروها: در حال محاسبه...\n"
+            f"• سازه‌ها: 5 عدد\n"
+            f"• رتبه: #--"
+        )
+    else:
+        message = "❌ اطلاعات یافت نشد!"
+    
+    keyboard = [
+        [InlineKeyboardButton("🔄 به‌روزرسانی", callback_data="refresh_profile")],
+        [InlineKeyboardButton("⬅️ بازگشت", callback_data="back_main")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await query.edit_message_text(
+        message,
+        reply_markup=reply_markup,
+        parse_mode='Markdown'
+    )
+
+async def show_loan_menu(query):
+    """نمایش منوی وام"""
+    user_id = query.from_user.id
+    
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        
+        # بررسی وام قبلی
+        cursor.execute(
+            "SELECT created_at FROM loans WHERE user_id = ? ORDER BY created_at DESC LIMIT 1",
+            (user_id,)
+        )
+        last_loan = cursor.fetchone()
+        
+        cursor.execute(
+            "SELECT resources FROM users WHERE user_id = ?",
+            (user_id,)
+        )
+        user_resources = cursor.fetchone()
+    
+    can_get_loan = True
+    if last_loan:
+        last_date = datetime.fromisoformat(last_loan['created_at'])
+        if datetime.now() - last_date < timedelta(hours=24):
+            can_get_loan = False
+    
+    resources = json.loads(user_resources['resources']) if user_resources else {}
+    
+    if can_get_loan:
+        message = (
+            "💵 **دریافت وام**\n\n"
+            f"💰 موجودی: {resources.get('money', 0):,}\n\n"
+            "📋 **شرایط:**\n"
+            "• حداکثر: ۵٬۰۰۰ پول\n"
+            "• بازپرداخت: ۲۴ ساعت\n"
+            "• سود: ۱۰٪\n"
+            "• یک بار در روز\n\n"
+            "✅ قابل دریافت"
         )
         
         keyboard = [
             [
-                InlineKeyboardButton("🏭 ساخت کارخانه", callback_data="build_factory"),
-                InlineKeyboardButton("💵 دریافت وام", callback_data="menu_loan")
+                InlineKeyboardButton("💵 وام ۲۰۰۰", callback_data="loan_2000"),
+                InlineKeyboardButton("💵 وام ۵۰۰۰", callback_data="loan_5000")
             ],
             [InlineKeyboardButton("⬅️ بازگشت", callback_data="back_main")]
         ]
-        
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await query.edit_message_text(
-            message,
-            reply_markup=reply_markup,
-            parse_mode='Markdown'
-        )
-    
-    async def show_guide_menu(self, query):
-        """نمایش راهنمای بازی"""
-        guide_text = (
-            "📘 **راهنمای بازی استراتژیک**\n\n"
-            
-            "🎯 **هدف بازی:**\n"
-            "تبدیل شدن به ابرقدرت جهانی\n\n"
-            
-            "⚔️ **سیستم جنگ:**\n"
-            "• نیروهای خود را تقویت کنید\n"
-            "• به کشورهای دیگر حمله کنید\n"
-            "• نتیجه بستگی به نیروها و شانس دارد\n\n"
-            
-            "💰 **اقتصاد:**\n"
-            "• پول: برای خرید نیرو و سازه\n"
-            "• نفت: برای سوخت نیروها\n"
-            "• برق: برای کارخانه‌ها\n\n"
-            
-            "💵 **سیستم وام:**\n"
-            "• روزی یک بار می‌توانید وام بگیرید\n"
-            "• وام باید بازپرداخت شود\n"
+    else:
+        message = (
+            "💵 **وضعیت وام**\n\n"
+            f"📅 آخرین وام: {last_loan['created_at'][:10]}\n\n"
+            "⏰ می‌توانید ۲۴ ساعت پس از آخرین وام، مجدداً دریافت کنید."
         )
         
         keyboard = [[InlineKeyboardButton("⬅️ بازگشت", callback_data="back_main")]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await query.edit_message_text(
-            guide_text,
-            reply_markup=reply_markup,
-            parse_mode='Markdown'
-        )
     
-    async def show_loan_menu(self, query, user_id: int):
-        """نمایش منوی وام"""
-        with db.get_connection() as conn:
-            cursor = conn.cursor()
-            
-            # بررسی وام‌های قبلی
-            cursor.execute(
-                """SELECT created_at 
-                FROM loans 
-                WHERE user_id = ? AND bot_id = ? 
-                ORDER BY created_at DESC LIMIT 1""",
-                (user_id, self.bot_id)
-            )
-            loan_data = cursor.fetchone()
-            
-            cursor.execute(
-                "SELECT resources FROM users WHERE user_id = ? AND bot_id = ?",
-                (user_id, self.bot_id)
-            )
-            user_resources = cursor.fetchone()
-        
-        if loan_data:
-            # کاربر وام دارد
-            message = (
-                f"💵 **وضعیت وام**\n\n"
-                f"📅 تاریخ دریافت: {loan_data['created_at'][:10]}\n\n"
-                f"⏰ می‌توانید پس از ۲۴ ساعت وام جدید بگیرید."
-            )
-            keyboard = [
-                [InlineKeyboardButton("📋 قوانین", callback_data="loan_rules")],
-                [InlineKeyboardButton("⬅️ بازگشت", callback_data="back_main")]
-            ]
-        else:
-            # کاربر وام ندارد
-            resources = json.loads(user_resources['resources']) if user_resources else {}
-            message = (
-                f"💵 **دریافت وام**\n\n"
-                f"💰 موجودی فعلی: {resources.get('money', 0):,}\n\n"
-                f"📋 **شرایط وام:**\n"
-                f"• حداکثر مبلغ: ۵٬۰۰۰\n"
-                f"• بازپرداخت: ۲۴ ساعته\n"
-                f"• سود: ۱۰٪\n"
-                f"• محدودیت: یک بار در روز\n\n"
-                f"✅ می‌توانید وام دریافت کنید."
-            )
-            keyboard = [
-                [
-                    InlineKeyboardButton("💵 وام ۵۰۰۰", callback_data="loan_5000"),
-                    InlineKeyboardButton("📋 قوانین", callback_data="loan_rules")
-                ],
-                [InlineKeyboardButton("⬅️ بازگشت", callback_data="back_main")]
-            ]
-        
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await query.edit_message_text(
-            message,
-            reply_markup=reply_markup,
-            parse_mode='Markdown'
-        )
+    reply_markup = InlineKeyboardMarkup(keyboard)
     
-    async def show_main_menu_callback(self, query, user_id: int):
-        """نمایش منوی اصلی از طریق callback"""
-        with db.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                """SELECT u.*, b.owner_id 
-                FROM users u 
-                JOIN bots b ON u.bot_id = b.id 
-                WHERE u.user_id = ? AND u.bot_id = ?""",
-                (user_id, self.bot_id)
-            )
-            user_data = cursor.fetchone()
+    await query.edit_message_text(
+        message,
+        reply_markup=reply_markup,
+        parse_mode='Markdown'
+    )
+
+async def show_help_menu(query):
+    """نمایش راهنمای بازی"""
+    help_text = (
+        "📘 **راهنمای بازی استراتژیک**\n\n"
         
-        if user_data:
-            is_owner = user_data['user_id'] == user_data['owner_id']
-            country = user_data['country']
-            
-            await query.edit_message_text(
-                f"🏰 **کشور {country}**\n\n"
-                "منوی اصلی بازی:",
-                reply_markup=self.get_main_menu_keyboard(is_owner),
-                parse_mode='Markdown'
-            )
-        else:
-            await query.edit_message_text(
-                "لطفاً ابتدا با دستور /start شروع کنید."
-            )
-    
-    async def child_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """راهنمای ربات فرزند"""
-        help_text = (
-            "🆘 **راهنمای ربات بازی**\n\n"
-            
-            "🎮 **شروع بازی:**\n"
-            "• مالک: /start و شروع بازی\n"
-            "• کاربر جدید: کشور انتخاب کنید\n"
-            "• کاربر قدیمی: /menu\n\n"
-            
-            "📱 **منوهای اصلی:**\n"
-            "• 🪖 نیروی زمینی: مدیریت سربازان\n"
-            "• ✈️ نیروی هوایی: مدیریت هواپیماها\n"
-            "• 📡 پدافند: سیستم‌های دفاعی\n"
-            "• 🚢 نیروی دریایی: کشتی‌های جنگی\n"
-            "• 🏭 اقتصاد: منابع و پول\n"
-            "• 🏢 سازه‌ها: ساختمان‌ها\n"
-            "• ⚔️ حمله: حمله به دیگران\n"
-            "• 👤 اطلاعات: پروفایل شما\n"
-            "• 📘 راهنما: این صفحه\n"
-            "• 💵 وام: دریافت وام\n\n"
-            
-            "❓ **مشکلات رایج:**\n"
-            "• اگر ربات پاسخ نمی‌دهد: /start\n"
-            "• اگر منو نمایش داده نمی‌شود: /menu"
-        )
+        "🎯 **هدف:**\n"
+        "• توسعه کشور خود\n"
+        "• تقویت نیروها\n"
+        "• حمله به دیگران\n"
+        "• تبدیل به ابرقدرت\n\n"
         
-        await update.message.reply_text(
-            help_text,
-            parse_mode='Markdown'
-        )
+        "⚔️ **نیروها:**\n"
+        "• زمینی: سرباز، توپخانه\n"
+        "• هوایی: جنگنده، موشک\n"
+        "• دریایی: کشتی، زیردریایی\n"
+        "• سایبری: هکر، تیم هک\n\n"
+        
+        "💰 **اقتصاد:**\n"
+        "• منابع: پول، نفت، برق\n"
+        "• سازه‌ها: کارخانه، معدن\n"
+        "• وام: روزی یک بار\n\n"
+        
+        "🏆 **پیروزی:**\n"
+        "• فتح تمام کشورها\n"
+        "• یا قوی‌ترین پس از ۳۰ روز"
+    )
     
-    async def handle_text_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """پردازش پیام‌های متنی"""
-        await update.message.reply_text(
-            "برای استفاده از ربات، از منوها استفاده کنید.\n"
-            "دستور /menu را بزنید یا از /start شروع کنید."
-        )
+    keyboard = [[InlineKeyboardButton("⬅️ بازگشت", callback_data="back_main")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
     
-    async def start_polling(self):
-        """شروع polling برای ربات فرزند"""
-        if self.application:
-            await self.application.initialize()
-            await self.application.start()
-            await self.application.updater.start_polling()
-            logger.info(f"ربات فرزند {self.bot_id} شروع به کار کرد")
-    
-    async def stop_polling(self):
-        """توقف polling برای ربات فرزند"""
-        if self.application:
-            await self.application.updater.stop()
-            await self.application.stop()
-            await self.application.shutdown()
-            logger.info(f"ربات فرزند {self.bot_id} متوقف شد")
+    await query.edit_message_text(
+        help_text,
+        reply_markup=reply_markup,
+        parse_mode='Markdown'
+    )
 
 # ==================== اجرای اصلی ====================
 
-async def setup_webhook(app: Application, webhook_url: str, port: int = 8443):
-    """تنظیم وب‌هوک برای Render"""
-    await app.bot.set_webhook(f"{webhook_url}/webhook")
-    logger.info(f"Webhook set to: {webhook_url}/webhook")
+def main():
+    """تابع اصلی"""
     
-    # ایجاد سرور برای دریافت به‌روزرسانی‌ها
-    from aiohttp import web
-    
-    async def handle_webhook(request):
-        """مدیریت درخواست‌های وب‌هوک"""
-        data = await request.json()
-        update = Update.de_json(data, app.bot)
-        await app.process_update(update)
-        return web.Response(text="OK")
-    
-    # راه‌اندازی سرور
-    server = web.Application()
-    server.router.add_post('/webhook', handle_webhook)
-    
-    runner = web.AppRunner(server)
-    await runner.setup()
-    site = web.TCPSite(runner, '0.0.0.0', port)
-    await site.start()
-    
-    return runner
-
-async def main():
-    """تابع اصلی اجرای برنامه"""
-    
-    # دریافت توکن از متغیرهای محیطی
+    # دریافت توکن از متغیر محیطی
     MOTHER_TOKEN = os.getenv("MOTHER_BOT_TOKEN")
     
     if not MOTHER_TOKEN:
-        logger.error("❌ متغیر محیطی MOTHER_BOT_TOKEN تنظیم نشده!")
-        logger.info("لطفاً توکن ربات مادر را تنظیم کنید.")
+        logger.error("❌ MOTHER_BOT_TOKEN تنظیم نشده!")
+        logger.info("لطفاً در Render.com متغیر زیر را تنظیم کنید:")
+        logger.info("MOTHER_BOT_TOKEN: توکن ربات مادر از @BotFather")
         return
     
     # ایجاد اپلیکیشن ربات مادر
@@ -1060,88 +689,53 @@ async def main():
     
     # تنظیم هندلرهای ربات مادر
     conv_handler = ConversationHandler(
-        entry_points=[CommandHandler('addbot', start_add_bot)],
+        entry_points=[CommandHandler('addbot', add_bot_start)],
         states={
             WAITING_TOKEN: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, process_bot_token)
+                MessageHandler(filters.TEXT & ~filters.COMMAND, process_token)
             ],
             WAITING_OWNER_ID: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, process_owner_id)
             ],
         },
-        fallbacks=[CommandHandler('cancel', cancel_add_bot)]
+        fallbacks=[CommandHandler('cancel', cancel)]
     )
     
     mother_app.add_handler(conv_handler)
-    mother_app.add_handler(CommandHandler('start', mother_start))
-    mother_app.add_handler(CommandHandler('listbots', list_bots))
-    mother_app.add_handler(CommandHandler('help', mother_help))
+    mother_app.add_handler(CommandHandler('start', start))
+    mother_app.add_handler(CommandHandler('listbots', list_bots_command))
+    mother_app.add_handler(CommandHandler('help', help_command))
     
-    # راه‌اندازی ربات‌های فرزند موجود
-    await BotManager.start_all_bots()
+    # راه‌اندازی ربات مادر
+    logger.info("🚀 ربات مادر در حال راه‌اندازی...")
     
-    # تنظیمات وب‌هوک برای Render
+    # بررسی حالت اجرا
     WEBHOOK_URL = os.getenv("WEBHOOK_URL", "")
     PORT = int(os.getenv("PORT", 8443))
     
     if WEBHOOK_URL:
-        # حالت تولید: استفاده از وب‌هوک
-        logger.info(f"🚀 شروع ربات مادر با وب‌هوک روی پورت {PORT}...")
-        await setup_webhook(mother_app, WEBHOOK_URL, PORT)
+        # حالت وب‌هوک برای Render
+        logger.info(f"📡 استفاده از وب‌هوک: {WEBHOOK_URL}")
         
-        # اجرای ربات‌های فرزند
-        for bot in BotManager._bots.values():
-            try:
-                await bot.start_polling()
-            except Exception as e:
-                logger.error(f"خطا در راه‌اندازی ربات فرزند: {e}")
-        
-        # نگه داشتن برنامه در حال اجرا
-        await asyncio.Event().wait()
-        
+        # اجرا با وب‌هوک
+        mother_app.run_webhook(
+            listen="0.0.0.0",
+            port=PORT,
+            webhook_url=f"{WEBHOOK_URL}/webhook",
+            drop_pending_updates=True
+        )
     else:
-        # حالت توسعه: استفاده از polling
-        logger.info("🚀 شروع ربات مادر در حالت توسعه (polling)...")
-        
-        # اجرای ربات مادر
-        await mother_app.initialize()
-        await mother_app.start()
-        await mother_app.updater.start_polling()
-        
-        # اجرای ربات‌های فرزند
-        for bot in BotManager._bots.values():
-            try:
-                await bot.start_polling()
-            except Exception as e:
-                logger.error(f"خطا در راه‌اندازی ربات فرزند: {e}")
-        
-        # نگه داشتن برنامه در حال اجرا
-        await asyncio.Event().wait()
-
-async def shutdown():
-    """خاموش کردن برنامه"""
-    logger.info("👋 در حال خاموش کردن ربات‌ها...")
-    
-    # توقف تمام ربات‌های فرزند
-    for bot in BotManager._bots.values():
-        try:
-            await bot.stop_polling()
-        except Exception as e:
-            logger.error(f"خطا در توقف ربات فرزند: {e}")
-    
-    logger.info("✅ ربات‌ها با موفقیت متوقف شدند.")
+        # حالت توسعه با polling
+        logger.info("🔧 حالت توسعه (polling)")
+        mother_app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
+    # اجرای برنامه
     try:
-        # ایجاد دایرکتوری‌های لازم
-        os.makedirs("data", exist_ok=True)
-        
-        # اجرای برنامه
-        asyncio.run(main())
+        main()
     except KeyboardInterrupt:
-        logger.info("دریافت سیگنال توقف...")
-        asyncio.run(shutdown())
+        logger.info("👋 ربات متوقف شد.")
     except Exception as e:
-        logger.error(f"❌ خطا در اجرای ربات: {e}")
+        logger.error(f"❌ خطا: {e}")
         import traceback
         logger.error(traceback.format_exc())
